@@ -1,38 +1,43 @@
-# BUSSID Auto Pilot — calibration & gesture test build
+# BUSSID Auto Pilot — cockpit ROI calibration update
 
-Package `com.bussid.autopilot` • Kotlin • minSdk 26 • targetSdk 35 • AGP 8.7.3 • Kotlin 2.0.21
+Kotlin / Android Studio • namespace `com.bussid.autopilot` • minSdk 26 • targetSdk 35 • compileSdk 35 • JDK 17
 
-## What this revision implements
-- MediaProjection foreground service and downsampled frame processing.
-- Lightweight Kotlin pixel heuristic for road-edge candidates, estimated center offset and bend direction. This is real frame processing, not a dummy feed, but it is not a trained road segmentation model/OpenCV.
-- Steering and conservative throttle/brake decision calculation. Throttle is capped at 35% because no reliable in-game speedometer telemetry/OCR exists yet. `maxSpeed` is currently a target setting only, not a verified speed limiter.
-- Persistent calibration for gas, brake, steering-left and steering-right touch coordinates as normalized screen positions (0–100% X/Y).
-- Individual 180 ms Accessibility gesture test buttons. Each test launches BUSSID (`com.maleo.bussimulatorid`) and schedules the calibrated touch 2.8 seconds later so the game, not the dashboard, is foreground. Android reports whether a gesture completed/cancelled; that does not prove BUSSID registered the touch.
-- Explicit opt-in live input switch. It remains OFF on launch and can only be enabled while capture and Accessibility are connected.
-- Live actuator uses one Accessibility `GestureDescription` with simultaneous gas-or-brake and steering strokes. Actual multi-touch behavior depends on Android OEM, display, game control layout and BUSSID input handling; it is not guaranteed.
-- Capture stop/disconnect disables automatic input.
+## Profil kamera dari video pengguna (cockpit BUSSID)
 
-## Safe setup and test sequence
-1. Install the debug APK and open BUSSID Auto Pilot.
-2. Open **BUKA PENGATURAN ACCESSIBILITY**, enable **BUSSID Auto Pilot Input**, then return to the app.
-3. In BUSSID, enter a stationary/empty practice area or garage. Keep the bus stopped.
-4. Start screen capture and approve Android's system prompt.
-5. Calibrate X/Y for Gas, Brake, Steering Left and Steering Right. Values are relative to the whole display. Landscape orientation and in-game HUD layout must match the calibration.
-6. Tap each individual **UJI** button. The app opens BUSSID and sends the test after 2.8 seconds. Check that the intended game control reacts. Gesture completion in Android is not proof of game response. If BUSSID is installed under a different package ID, the launch step will not work. If the wrong control reacts, adjust coordinates. Do not test while driving in traffic.
-7. Keep live control OFF until all four individual tests behave correctly. Then tick the manual verification checkbox. Any coordinate adjustment invalidates that control’s gesture test and requires retesting. If you choose to experiment, enable the opt-in switch only in a safe, stationary practice area and be ready to stop capture immediately.
-8. Stop using **STOP CAPTURE & INPUT** or the foreground notification action.
+Rekaman uji yang dipakai sebagai referensi berukuran 1070×480 dan memperlihatkan kamera cockpit dengan dashboard menempati kira-kira 20% bagian bawah layar, HUD di sisi kiri/kanan, kaca depan di area tengah, serta kendaraan dan pepohonan yang kadang menutupi jalan. Untuk profil ini, `RoadDetector` memakai ROI trapezoid vertikal `topY=0.36` sampai `bottomY=0.79`, melebar dari `topHalfWidth=0.10` ke `bottomHalfWidth=0.35`. Ini sengaja mengecualikan langit bagian atas, sebagian HUD samping, dan dashboard bawah.
 
-## Important limitations
-- The detector is heuristic. Shadows, road texture, sky, dashboard overlays, night scenes, camera pitch, intersections and unusual road geometry can cause false road estimates. Confidence is only a heuristic score.
-- There is no robust speedometer OCR/game telemetry. The max-speed setting cannot currently enforce a km/h ceiling. Automatic throttle is intentionally conservative and capped, but this does not make unattended driving safe.
-- Android Accessibility gestures are not a game controller API. Simultaneous strokes can be cancelled, merged, ignored or interpreted differently across devices and game versions. A steering wheel/joystick UI may need a different calibrated gesture model than discrete left/right buttons.
-- The current control loop is experimental and not suitable for public-road, unattended or long-duration operation. Do not rely on it to avoid collisions or stay in lane.
-- The project currently uses Kotlin image processing, not OpenCV. OpenCV integration should follow after the frame pipeline and device performance are validated.
-- No floating overlay is included in this revision.
+ROI adalah titik awal khusus rekaman tersebut, bukan kalibrasi universal. Jika resolusi, posisi cockpit, FOV, atau skala HUD berubah, parameter `RoadRoiProfile` harus dikalibrasi ulang. Video juga menunjukkan lalu lintas, persimpangan/perlintasan, dan kendaraan yang dapat menutup batas jalan. Pada kondisi tersebut detektor edge-geometri mungkin gagal; confidence rendah harus tetap menghentikan autopilot.
 
-## Build APK with GitHub Actions
-1. Upload the repository contents to GitHub.
-2. Push to `main` or run **Build Android APK** manually from Actions.
-3. Download artifact `BUSSID-AutoPilot-debug` containing `app-debug.apk`.
+## Perubahan pada revisi ini
 
-Workflow uses JDK 17 and Gradle 8.9. Local build: `gradle :app:assembleDebug`.
+- `RoadDetector`: pemrosesan frame nyata pada resolusi kerja 192×108, grayscale, Sobel gradient, ROI trapezoid yang dapat dikonfigurasi dan dipersempit ke area kaca depan cockpit berdasarkan rekaman pengguna, serta Hough voting terbatas untuk mencari dua keluarga garis batas jalan. Kandidat diuji dengan posisi, lebar jalan dekat/jauh, dan dukungan edge sebelum confidence diberikan.
+- `RoadAnalyzer`: stabilisasi temporal untuk offset dan kelengkungan. Satu frame gagal tidak dianggap sebagai deteksi valid; confidence rendah mengembalikan `UNKNOWN`.
+- `SteeringController`: kontrol PID bounded dengan curvature feed-forward dan reset integral saat deteksi gagal.
+- `SpeedController`: pembatasan throttle konservatif berdasarkan kelengkungan. Brake hanya digunakan pada kondisi kurva sangat tajam; saat deteksi gagal, gas/rem/kemudi semuanya nol.
+- `AutoPilotEngine`: fail-safe terpusat untuk memblokir output saat jalan tidak terdeteksi atau confidence < 0.43.
+- `ScreenCaptureService`: memakai `RoadAnalyzer`, membatasi pemrosesan ke sekitar 8 fps, menutup `Image`/Bitmap, menghentikan input otomatis ketika confidence turun atau pemrosesan frame gagal, serta menambahkan logcat diagnostics.
+- Dashboard diperbarui berkala dan menampilkan arah jalan, confidence, center X, status keputusan, target speed, dan status input. Tombol Emergency Stop mematikan input otomatis.
+- Modul dipisah menjadi `RoadDetector`, `RoadAnalyzer`, `SteeringController`, `SpeedController`, dan `AutoPilotEngine`.
+
+## Batasan yang belum boleh dianggap selesai
+
+1. Ini adalah computer vision berbasis edge geometry, bukan semantic road segmentation yang dilatih. Hough/Sobel lebih kaya daripada sampling warna/edge satu dimensi, tetapi marka jalan, bayangan, kendaraan, persimpangan, malam hari, perubahan kamera, dan HUD BUSSID tetap dapat menimbulkan false positive/negative.
+2. Confidence merupakan skor heuristik dari dukungan garis dan konsistensi geometri, bukan probabilitas terkalibrasi.
+3. Belum ada kumpulan screenshot/rekaman gameplay BUSSID yang disertakan, sehingga akurasi belum divalidasi pada berbagai map/cuaca/kamera. Sebelum kontrol otomatis dicoba, kumpulkan screenshot gameplay berlabel dan ukur precision/recall serta kestabilan centerline.
+4. Aplikasi belum membaca speedometer atau telemetry kecepatan. `maxSpeed` hanya ditampilkan sebagai target konfigurasi dan **belum dapat menjamin batas km/jam**. Throttle tetap dibatasi konservatif.
+5. Accessibility gesture bukan API gamepad/vehicle control BUSSID. Gesture multi-stroke dapat berbeda perilaku antar perangkat Xiaomi/Android dan versi game. Uji tombol individual tetap harus diverifikasi langsung di BUSSID.
+6. Deteksi gagal akan mematikan auto-control sampai pengguna mengaktifkannya kembali. Ini fail-safe yang disengaja, bukan recovery otomatis.
+7. Belum ada klaim bahwa APK telah berhasil dibangun atau diuji di perangkat fisik pada revisi ini.
+
+## Langkah uji yang disarankan
+
+1. Build dan install APK pada perangkat uji. Aktifkan Accessibility service dari pengaturan Android.
+2. Mulai screen capture dan pastikan frame counter bertambah.
+3. Rekam screenshot BUSSID dalam kondisi lurus, tikungan kiri/kanan, bayangan, siang/malam, jalan lebar/sempit, persimpangan, dan ada/tidaknya kendaraan.
+4. Verifikasi apakah batas kiri/kanan dan center X mengikuti jalan, bukan kendaraan atau bayangan. Jangan aktifkan input otomatis selama tahap ini.
+5. Kalibrasi dan uji setiap gesture satu per satu di garasi/area aman. Centang verifikasi hanya setelah tombol game benar-benar bereaksi.
+6. Jika ingin menguji input otomatis, lakukan hanya di area latihan kosong, dengan Emergency Stop mudah dijangkau. Jangan gunakan saat berkendara sungguhan.
+
+## Build
+
+Workflow GitHub Actions `.github/workflows/build-apk.yml` membangun `:app:assembleDebug` dengan JDK 17 dan Gradle 8.9, lalu mengunggah `app-debug.apk`. Build lokal: `gradle :app:assembleDebug`.

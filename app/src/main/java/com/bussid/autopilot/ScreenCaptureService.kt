@@ -12,13 +12,14 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.WindowManager
 
 class ScreenCaptureService : Service() {
     private var projection: MediaProjection? = null
     private var display: VirtualDisplay? = null
     private var reader: ImageReader? = null
-    private val detector = RoadDetector()
+    private val analyzer = RoadAnalyzer()
     private val engine = AutoPilotEngine()
     private var running = false
     private var lastFrameAt = 0L
@@ -74,20 +75,29 @@ class ScreenCaptureService : Service() {
                     val now = SystemClock.elapsedRealtime()
                     if (now - lastFrameAt > 120) {
                         lastFrameAt = now
-                        val road = detector.analyze(frame)
+                        val road = analyzer.analyze(frame)
                         val prefs = SettingsManager(this)
                         val decision = engine.process(road, prefs.sensitivity, prefs.maxSpeed)
                         PilotRuntime.latestRoad = road
                         PilotRuntime.latestDecision = decision
                         PilotRuntime.frameCount++
+                        if (PilotRuntime.frameCount % 30L == 0L) {
+                            Log.d(TAG, "frames=${PilotRuntime.frameCount} road=${road.direction} confidence=${road.confidence} center=${road.centerX}")
+                        }
+                        if (!road.detected || road.confidence < .43f) {
+                            // Fail closed immediately: no new touch gestures on uncertain frames.
+                            FloatingControl.stopAutoInput("Fail-safe: confidence jalan rendah")
+                        }
                         // Live actuation is opt-in and requires an enabled Accessibility service.
                         if (PilotRuntime.autoControlEnabled && FloatingControl.isConnected()) {
                             FloatingControl.send(decision, prefs)
                         }
                     }
                     frame.recycle()
-                } catch (_: Exception) {
-                    PilotRuntime.captureError = "Gagal memproses frame"
+                } catch (e: Exception) {
+                    PilotRuntime.captureError = "Frame error: ${e.javaClass.simpleName}"
+                    Log.e(TAG, "Frame processing failed", e)
+                    FloatingControl.stopAutoInput("Fail-safe: pemrosesan frame gagal")
                 } finally { image.close() }
             }, worker)
             display = projection?.createVirtualDisplay("BUSSID-AutoPilot", width, height,
@@ -96,6 +106,7 @@ class ScreenCaptureService : Service() {
             PilotRuntime.captureActive = true
         } catch (e: Exception) {
             PilotRuntime.captureError = e.message ?: "Capture gagal"
+            Log.e(TAG, "MediaProjection setup failed", e)
             stopCapture(); stopSelf()
         }
         return START_NOT_STICKY
@@ -137,6 +148,7 @@ class ScreenCaptureService : Service() {
         const val EXTRA_DATA = "resultData"
         const val CHANNEL = "bussid_capture"
         const val NOTIFICATION_ID = 45
+        private const val TAG = "BUSSIDAutoPilot"
     }
 }
 

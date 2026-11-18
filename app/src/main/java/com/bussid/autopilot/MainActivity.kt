@@ -6,6 +6,8 @@ import android.content.Intent
 import android.graphics.Color
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.widget.*
@@ -21,6 +23,10 @@ class MainActivity : Activity() {
     private lateinit var prefs: SettingsManager
     private lateinit var autoSwitch: Switch
     private lateinit var verifiedControls: CheckBox
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val refreshTask = object : Runnable {
+        override fun run() { refresh(); uiHandler.postDelayed(this, 500L) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,6 +53,11 @@ class MainActivity : Activity() {
         root.addView(status); root.addView(road); root.addView(steering); root.addView(controls); root.addView(inputStatus)
 
         root.addView(button("MULAI SCREEN CAPTURE") { requestCapture() })
+        root.addView(button("EMERGENCY STOP • MATIKAN INPUT") {
+            FloatingControl.stopAutoInput("EMERGENCY STOP oleh pengguna")
+            if (::autoSwitch.isInitialized) autoSwitch.isChecked = false
+            refresh()
+        })
         root.addView(button("STOP CAPTURE & INPUT") {
             FloatingControl.stopAutoInput("Dihentikan pengguna")
             stopService(Intent(this, ScreenCaptureService::class.java))
@@ -63,11 +74,17 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             isChecked = false
             setOnCheckedChangeListener { _, checked ->
-                val allowed = checked && PilotRuntime.captureActive && FloatingControl.isConnected() && verifiedControls.isChecked && PilotRuntime.allGestureTestsCompleted()
+                if (!checked) {
+                    FloatingControl.stopAutoInput("Input otomatis dimatikan")
+                    refresh()
+                    return@setOnCheckedChangeListener
+                }
+                val allowed = PilotRuntime.captureActive && FloatingControl.isConnected() &&
+                    verifiedControls.isChecked && PilotRuntime.allGestureTestsCompleted()
                 PilotRuntime.autoControlEnabled = allowed
                 if (!allowed) {
                     isChecked = false
-                    FloatingControl.stopAutoInput("Belum siap: capture dan Accessibility harus aktif")
+                    FloatingControl.stopAutoInput("Belum siap: capture, Accessibility, dan verifikasi gesture wajib aktif")
                     Toast.makeText(this@MainActivity, "Selesaikan 4 uji gesture, centang verifikasi, lalu pastikan capture dan Accessibility aktif", Toast.LENGTH_LONG).show()
                 } else {
                     PilotRuntime.lastInputStatus = "Kontrol otomatis aktif — uji di area aman"
@@ -209,15 +226,17 @@ class MainActivity : Activity() {
             refresh()
         }
     }
-    override fun onResume() { super.onResume(); refresh() }
+    override fun onResume() { super.onResume(); uiHandler.removeCallbacks(refreshTask); uiHandler.post(refreshTask) }
+    override fun onPause() { uiHandler.removeCallbacks(refreshTask); super.onPause() }
     private fun refresh() {
         if (!::status.isInitialized) return
         status.text = if (PilotRuntime.captureActive) "Capture: aktif • ${PilotRuntime.frameCount} frame" else "Capture: belum aktif"
-        road.text = "Road detection: ${PilotRuntime.latestRoad.direction} • confidence ${(PilotRuntime.latestRoad.confidence * 100).toInt()}%"
+        val currentRoad = PilotRuntime.latestRoad
+        road.text = "Road: ${currentRoad.direction} • confidence ${(currentRoad.confidence * 100).toInt()}% • center X ${if (currentRoad.centerX >= 0f) currentRoad.centerX.toInt() else "—"} px"
         steering.text = "Steering estimate: ${fmt(PilotRuntime.latestDecision.steering)}"
-        controls.text = "Gas: ${(PilotRuntime.latestDecision.throttle * 100).toInt()}%     Rem: ${(PilotRuntime.latestDecision.brake * 100).toInt()}%"
-        inputStatus.text = "Accessibility: ${if (FloatingControl.isConnected()) "terhubung" else "belum aktif"} • ${PilotRuntime.lastInputStatus}"
-        if (::autoSwitch.isInitialized && (!PilotRuntime.captureActive || !FloatingControl.isConnected())) {
+        controls.text = "${PilotRuntime.latestDecision.status}\nGas: ${(PilotRuntime.latestDecision.throttle * 100).toInt()}% • Rem: ${(PilotRuntime.latestDecision.brake * 100).toInt()}% • Target: ${prefs.maxSpeed} km/jam (tanpa telemetry)"
+        inputStatus.text = "Accessibility: ${if (FloatingControl.isConnected()) "terhubung" else "belum aktif"} • ${PilotRuntime.lastInputStatus}" + (PilotRuntime.captureError?.let { " • $it" } ?: "")
+        if (::autoSwitch.isInitialized && (!PilotRuntime.captureActive || !FloatingControl.isConnected() || !PilotRuntime.autoControlEnabled)) {
             PilotRuntime.autoControlEnabled = false
             autoSwitch.isChecked = false
         }
